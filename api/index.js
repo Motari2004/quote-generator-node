@@ -13,6 +13,9 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+// Serve static files from public directory
+app.use(express.static(path.join(__dirname, '../public')));
+
 // Configuration
 const ZERNIO_API_KEY = process.env.ZERNIO_API_KEY;
 const FACEBOOK_PAGE_ID = process.env.FACEBOOK_PAGE_ID;
@@ -411,6 +414,11 @@ const autoPostWorker = async () => {
 // EXPRESS ROUTES
 // ============================================
 
+// Serve index.html for root route
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/index.html'));
+});
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ 
@@ -617,8 +625,8 @@ app.get('/api/test-zernio', async (req, res) => {
   }
 });
 
-// Root route
-app.get('/', (req, res) => {
+// API info endpoint
+app.get('/api', (req, res) => {
   res.json({
     name: 'Quote Generator API',
     version: '1.0.0',
@@ -658,6 +666,7 @@ if (require.main === module) {
   app.listen(PORT, () => {
     console.log('');
     console.log('🚀 Server running on http://localhost:' + PORT);
+    console.log('🌐 UI: http://localhost:' + PORT);
     console.log('📊 Health: http://localhost:' + PORT + '/api/health');
     console.log('📊 Status: http://localhost:' + PORT + '/api/status');
     console.log('🧪 Test Zernio: http://localhost:' + PORT + '/api/test-zernio');
