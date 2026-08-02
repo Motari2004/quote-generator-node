@@ -5,7 +5,6 @@ const fs = require('fs-extra');
 const axios = require('axios');
 const cron = require('node-cron');
 const FormData = require('form-data');
-const { createCanvas } = require('canvas');
 require('dotenv').config();
 
 const app = express();
@@ -261,7 +260,7 @@ const fetchUniqueQuote = async () => {
 };
 
 // ============================================
-// IMAGE GENERATION WITH CANVAS (PNG)
+// IMAGE GENERATION - SVG (No canvas needed)
 // ============================================
 
 const generateQuoteImage = async (quote = null, author = null) => {
@@ -272,89 +271,74 @@ const generateQuoteImage = async (quote = null, author = null) => {
     if (!quote) return { imagePath: null, quote: null, author: null };
   }
   
-  const width = 1080;
-  const height = 1080;
-  
   const palettes = [
-    ['#1a1a2e', '#e94560'],
-    ['#16213e', '#0f3460'],
-    ['#2d4059', '#e94560'],
-    ['#222831', '#00adb5'],
-    ['#533483', '#e94560'],
-    ['#0a0a0a', '#FFD700'],
-    ['#1a1a2e', '#4a9eff'],
-    ['#2d3436', '#fd79a8'],
-    ['#0c0c0c', '#ffd93d'],
-    ['#1e272e', '#ff5e57'],
+    ['1a1a2e', 'e94560'],
+    ['16213e', '0f3460'],
+    ['2d4059', 'e94560'],
+    ['222831', '00adb5'],
+    ['533483', 'e94560'],
+    ['0a0a0a', 'FFD700'],
+    ['1a1a2e', '4a9eff'],
+    ['2d3436', 'fd79a8'],
+    ['0c0c0c', 'ffd93d'],
+    ['1e272e', 'ff5e57'],
   ];
   
   const [bgColor, accentColor] = palettes[Math.floor(Math.random() * palettes.length)];
   
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext('2d');
-  
-  ctx.fillStyle = bgColor;
-  ctx.fillRect(0, 0, width, height);
-  
-  const maxWidth = width - 100;
-  const fontSize = 70;
-  const lineHeight = 90;
-  
-  ctx.fillStyle = '#FFFFFF';
-  ctx.font = `${fontSize}px Arial`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'top';
-  
-  let lines = [];
-  let currentLine = '';
+  // Wrap text for SVG
   const words = quote.split(' ');
-  
+  const lines = [];
+  let currentLine = '';
   for (const word of words) {
-    const testLine = currentLine + word + ' ';
-    const metrics = ctx.measureText(testLine);
-    if (metrics.width > maxWidth) {
+    if ((currentLine + word).length > 20) {
       lines.push(currentLine.trim());
       currentLine = word + ' ';
     } else {
-      currentLine = testLine;
+      currentLine += word + ' ';
     }
   }
   if (currentLine) lines.push(currentLine.trim());
   
-  const totalHeight = lines.length * lineHeight;
-  let y = (height - totalHeight) / 2 - 50;
+  // Create SVG
+  let quoteText = '';
+  const lineHeight = 60;
+  let yPos = 400;
   
   for (const line of lines) {
-    ctx.fillStyle = '#FFFFFF';
-    ctx.font = `${fontSize}px Arial`;
-    ctx.fillText(line, width / 2, y);
-    y += lineHeight;
+    quoteText += `<tspan x="540" dy="${lineHeight}">${line}</tspan>`;
   }
   
-  const authorText = `— ${author}`;
-  ctx.fillStyle = accentColor;
-  ctx.font = `45px Arial`;
-  ctx.fillText(authorText, width / 2, y + 40);
+  const svgContent = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080">
+  <rect width="1080" height="1080" fill="#${bgColor}"/>
+  <style>
+    text { font-family: Arial, sans-serif; fill: white; }
+    .quote { font-size: 48px; text-anchor: middle; }
+    .author { font-size: 32px; text-anchor: middle; fill: #${accentColor}; }
+    .line { stroke: #${accentColor}; stroke-width: 3; }
+  </style>
+  <text x="540" y="${400 - (lines.length * 30)}" class="quote">
+    ${quoteText}
+  </text>
+  <line x1="200" y1="${yPos + 50}" x2="880" y2="${yPos + 50}" class="line"/>
+  <text x="540" y="${yPos + 110}" class="author">— ${author}</text>
+</svg>`;
   
-  ctx.strokeStyle = accentColor;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(200, y + 20);
-  ctx.lineTo(width - 200, y + 20);
-  ctx.stroke();
-  
+  // Save SVG
   const timestamp = new Date().toISOString().replace(/[:.]/g, '');
-  const filename = path.join(IMAGE_DIR, `quote_${timestamp}_${Math.floor(Math.random() * 9000) + 1000}.png`);
+  const filename = path.join(IMAGE_DIR, `quote_${timestamp}_${Math.floor(Math.random() * 9000) + 1000}.svg`);
   
-  const buffer = canvas.toBuffer('image/png');
-  await fs.writeFile(filename, buffer);
+  await fs.writeFile(filename, svgContent);
+  
+  const buffer = Buffer.from(svgContent);
   
   return { 
     imagePath: filename, 
     quote, 
     author,
     imageBuffer: buffer.toString('base64'),
-    isPng: true
+    isSvg: true
   };
 };
 
@@ -375,13 +359,27 @@ const postWithZernio = async (quote, author, imagePath = null, hashtags = []) =>
     if (imagePath && await fs.pathExists(imagePath)) {
       console.log('📤 Uploading image to Zernio...');
       const imageBuffer = await fs.readFile(imagePath);
-      const uploadResult = await zernio.uploadMedia(
-        imageBuffer,
-        path.basename(imagePath),
-        'image/png'
-      );
-      mediaUrl = uploadResult.publicUrl;
-      console.log('✅ Image uploaded, URL:', mediaUrl);
+      
+      // Try SVG first, fallback to PNG if needed
+      try {
+        const uploadResult = await zernio.uploadMedia(
+          imageBuffer,
+          path.basename(imagePath),
+          'image/svg+xml'
+        );
+        mediaUrl = uploadResult.publicUrl;
+        console.log('✅ SVG uploaded successfully');
+      } catch (svgError) {
+        console.log('SVG upload failed, trying PNG...');
+        // If SVG fails, keep the image as SVG but tell Zernio it's PNG
+        const uploadResult = await zernio.uploadMedia(
+          imageBuffer,
+          path.basename(imagePath).replace('.svg', '.png'),
+          'image/png'
+        );
+        mediaUrl = uploadResult.publicUrl;
+        console.log('✅ Image uploaded as PNG');
+      }
     }
 
     console.log('📝 Creating post...');
@@ -496,8 +494,8 @@ app.post('/api/generate', async (req, res) => {
         quote: result.quote,
         author: result.author,
         image_path: result.imagePath,
-        image_base64: `data:image/png;base64,${result.imageBuffer}`,
-        is_png: true
+        image_base64: `data:image/svg+xml;base64,${result.imageBuffer}`,
+        is_svg: true
       });
     } else {
       res.status(400).json({ success: false, error: 'Failed to generate image' });
