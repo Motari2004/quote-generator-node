@@ -12,7 +12,6 @@ const app = express();
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
-app.use(express.static(path.join(__dirname, '../public')));
 
 // Configuration
 const ZERNIO_API_KEY = process.env.ZERNIO_API_KEY;
@@ -32,15 +31,12 @@ class ZernioClient {
     this.baseURL = ZERNIO_BASE_URL;
   }
 
-  async request(method, endpoint, data = null, isFormData = false) {
+  async request(method, endpoint, data = null) {
     const url = `${this.baseURL}${endpoint}`;
     const headers = {
-      'Authorization': `Bearer ${this.apiKey}`
+      'Authorization': `Bearer ${this.apiKey}`,
+      'Content-Type': 'application/json'
     };
-
-    if (!isFormData) {
-      headers['Content-Type'] = 'application/json';
-    }
 
     try {
       const response = await axios({
@@ -52,7 +48,7 @@ class ZernioClient {
       });
       return response.data;
     } catch (error) {
-      console.error(`Zernio API Error (${method} ${endpoint}):`, error.response?.data || error.message);
+      console.error(`Zernio API Error:`, error.response?.data || error.message);
       throw error;
     }
   }
@@ -65,9 +61,7 @@ class ZernioClient {
         contentType: contentType
       });
 
-      const { uploadUrl, publicUrl, key, expiresIn } = presignResponse;
-
-      console.log(`✅ Presigned URL received (expires in ${expiresIn}s)`);
+      const { uploadUrl, publicUrl } = presignResponse;
 
       console.log('📤 Uploading file to presigned URL...');
       await axios.put(uploadUrl, fileBuffer, {
@@ -77,13 +71,7 @@ class ZernioClient {
       });
 
       console.log('✅ File uploaded successfully');
-      console.log(`🔗 Public URL: ${publicUrl}`);
-
-      return {
-        publicUrl,
-        key,
-        expiresIn
-      };
+      return { publicUrl };
     } catch (error) {
       console.error('Media upload error:', error.message);
       throw error;
@@ -123,37 +111,25 @@ class ZernioClient {
 
       console.log('✅ Post created successfully!');
       
-      let postUrl = null;
-      let postId = null;
-
-      if (response.post) {
-        postId = response.post._id || response.post.field_id || response.post.id;
-        if (response.post.platforms && response.post.platforms.length > 0) {
-          postUrl = response.post.platforms[0].platformPostUrl;
-        }
-      } else {
-        postId = response._id || response.id || 'unknown';
-      }
+      let postId = response.post?._id || response._id || 'unknown';
+      let postUrl = response.post?.platforms?.[0]?.platformPostUrl || 
+                    `https://www.facebook.com/${FACEBOOK_PAGE_ID}/posts/${postId}`;
 
       return {
         success: true,
         postId,
-        url: postUrl || `https://www.facebook.com/${FACEBOOK_PAGE_ID}/posts/${postId}`,
+        url: postUrl,
         data: response
       };
     } catch (error) {
-      console.error('Post creation error:', error.response?.data || error.message);
+      console.error('Post creation error:', error.message);
       throw error;
     }
   }
 
   async testConnection() {
     try {
-      const response = await this.request('GET', '/posts', {
-        query: {
-          limit: 1
-        }
-      });
+      const response = await this.request('GET', '/posts?limit=1');
       return { success: true, data: response };
     } catch (error) {
       return { success: false, error: error.message };
@@ -167,15 +143,13 @@ try {
   if (ZERNIO_API_KEY) {
     zernio = new ZernioClient(ZERNIO_API_KEY);
     console.log('✅ Zernio client initialized');
-  } else {
-    console.warn('⚠️ ZERNIO_API_KEY not set');
   }
 } catch (error) {
   console.warn('⚠️ Failed to initialize Zernio client:', error.message);
 }
 
 // Data directory - Use /tmp for Vercel
-const DATA_DIR = process.env.DATA_DIR || '/tmp/quote_data';
+const DATA_DIR = '/tmp/quote_data';
 const IMAGE_DIR = path.join(DATA_DIR, 'images');
 
 // Ensure directories exist
@@ -199,12 +173,10 @@ let autoPostTask = null;
 const loadJsonFile = async (filePath, defaultValue = []) => {
   try {
     if (await fs.pathExists(filePath)) {
-      const data = await fs.readJson(filePath);
-      return data;
+      return await fs.readJson(filePath);
     }
     return defaultValue;
   } catch (error) {
-    console.error(`Error loading ${filePath}:`, error);
     return defaultValue;
   }
 };
@@ -233,16 +205,13 @@ const fetchUniqueQuote = async () => {
   const postedQuotes = await loadPostedQuotes();
   const allUsed = new Set([...usedQuotes, ...postedQuotes]);
   
-  const maxAttempts = 30;
-  
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+  for (let attempt = 0; attempt < 30; attempt++) {
     try {
       const response = await axios.get('https://zenquotes.io/api/random', { timeout: 5000 });
       if (response.status === 200) {
         const data = response.data;
         const quote = data[0].q;
         const author = data[0].a;
-        
         const quoteId = `${quote}|${author}`;
         
         if (!allUsed.has(quoteId)) {
@@ -255,7 +224,6 @@ const fetchUniqueQuote = async () => {
       console.error('Error fetching quote:', error.message);
     }
   }
-  
   return { quote: null, author: null };
 };
 
@@ -325,20 +293,17 @@ const generateQuoteImage = async (quote = null, author = null) => {
   <text x="540" y="${yPos + 110}" class="author">— ${author}</text>
 </svg>`;
   
-  // Save SVG
   const timestamp = new Date().toISOString().replace(/[:.]/g, '');
-  const filename = path.join(IMAGE_DIR, `quote_${timestamp}_${Math.floor(Math.random() * 9000) + 1000}.svg`);
+  const filename = path.join(IMAGE_DIR, `quote_${timestamp}.svg`);
   
   await fs.writeFile(filename, svgContent);
-  
   const buffer = Buffer.from(svgContent);
   
   return { 
     imagePath: filename, 
     quote, 
     author,
-    imageBuffer: buffer.toString('base64'),
-    isSvg: true
+    imageBuffer: buffer.toString('base64')
   };
 };
 
@@ -360,7 +325,6 @@ const postWithZernio = async (quote, author, imagePath = null, hashtags = []) =>
       console.log('📤 Uploading image to Zernio...');
       const imageBuffer = await fs.readFile(imagePath);
       
-      // Try SVG first, fallback to PNG if needed
       try {
         const uploadResult = await zernio.uploadMedia(
           imageBuffer,
@@ -369,9 +333,8 @@ const postWithZernio = async (quote, author, imagePath = null, hashtags = []) =>
         );
         mediaUrl = uploadResult.publicUrl;
         console.log('✅ SVG uploaded successfully');
-      } catch (svgError) {
+      } catch (error) {
         console.log('SVG upload failed, trying PNG...');
-        // If SVG fails, keep the image as SVG but tell Zernio it's PNG
         const uploadResult = await zernio.uploadMedia(
           imageBuffer,
           path.basename(imagePath).replace('.svg', '.png'),
@@ -393,13 +356,6 @@ const postWithZernio = async (quote, author, imagePath = null, hashtags = []) =>
     return result;
   } catch (error) {
     console.error('❌ Post error:', error.message);
-    
-    console.log('⚠️ Falling back to simulation mode');
-    const quoteId = `${quote}|${author}`;
-    const postedQuotes = await loadPostedQuotes();
-    postedQuotes.push(quoteId);
-    await savePostedQuotes(postedQuotes);
-
     return {
       success: true,
       simulated: true,
@@ -418,7 +374,6 @@ const autoPostWorker = async () => {
   
   try {
     console.log('🔄 Auto-posting with Zernio...');
-    
     const result = await generateQuoteImage();
     
     if (result.imagePath) {
@@ -439,8 +394,6 @@ const autoPostWorker = async () => {
         });
         await saveAutoPostLog(logData);
         console.log('✅ Auto-post successful!');
-      } else {
-        console.error('❌ Auto-post failed:', postResult.error);
       }
     }
   } catch (error) {
@@ -452,10 +405,12 @@ const autoPostWorker = async () => {
 // API ROUTES
 // ============================================
 
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '../public/index.html'));
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Status
 app.get('/api/status', async (req, res) => {
   const used = await loadUsedQuotes();
   const posted = await loadPostedQuotes();
@@ -473,6 +428,7 @@ app.get('/api/status', async (req, res) => {
   });
 });
 
+// Generate quote
 app.post('/api/generate', async (req, res) => {
   try {
     let { quote, author } = req.body;
@@ -494,8 +450,7 @@ app.post('/api/generate', async (req, res) => {
         quote: result.quote,
         author: result.author,
         image_path: result.imagePath,
-        image_base64: `data:image/svg+xml;base64,${result.imageBuffer}`,
-        is_svg: true
+        image_base64: `data:image/svg+xml;base64,${result.imageBuffer}`
       });
     } else {
       res.status(400).json({ success: false, error: 'Failed to generate image' });
@@ -506,6 +461,7 @@ app.post('/api/generate', async (req, res) => {
   }
 });
 
+// Post quote
 app.post('/api/post', async (req, res) => {
   try {
     const { quote, author, image_path, hashtags = [], is_instant = true } = req.body;
@@ -539,6 +495,7 @@ app.post('/api/post', async (req, res) => {
   }
 });
 
+// Start auto-post
 app.post('/api/start-auto', (req, res) => {
   if (isAutoPosting) {
     return res.status(400).json({ success: false, error: 'Auto-post already running' });
@@ -559,6 +516,7 @@ app.post('/api/start-auto', (req, res) => {
   res.json({ success: true, message: 'Auto-post started' });
 });
 
+// Stop auto-post
 app.post('/api/stop-auto', (req, res) => {
   isAutoPosting = false;
   
@@ -570,6 +528,7 @@ app.post('/api/stop-auto', (req, res) => {
   res.json({ success: true, message: 'Auto-post stopped' });
 });
 
+// Update interval
 app.post('/api/update-interval', (req, res) => {
   const { interval } = req.body;
   
@@ -593,6 +552,7 @@ app.post('/api/update-interval', (req, res) => {
   res.json({ success: true, interval: parseInt(interval) });
 });
 
+// Reset data
 app.post('/api/reset', async (req, res) => {
   try {
     await fs.remove(USED_QUOTES_FILE);
@@ -605,6 +565,7 @@ app.post('/api/reset', async (req, res) => {
   }
 });
 
+// Ping
 app.get('/ping', (req, res) => {
   res.json({
     status: 'pong',
@@ -614,6 +575,7 @@ app.get('/ping', (req, res) => {
   });
 });
 
+// Test Zernio
 app.get('/api/test-zernio', async (req, res) => {
   if (!zernio) {
     return res.json({ 
@@ -638,6 +600,16 @@ app.get('/api/test-zernio', async (req, res) => {
   }
 });
 
+// Root route - serve HTML
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/index.html'));
+});
+
+// Catch-all for API routes
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: 'API endpoint not found' });
+});
+
 // ============================================
 // EXPORT FOR VERCEL
 // ============================================
@@ -648,16 +620,6 @@ module.exports = app;
 if (require.main === module) {
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, () => {
-    console.log('');
-    console.log('🚀 Server running on http://localhost:' + PORT);
-    console.log('📊 Status: http://localhost:' + PORT + '/api/status');
-    console.log('🧪 Test Zernio: http://localhost:' + PORT + '/api/test-zernio');
-    console.log('');
-    console.log('📋 Configuration:');
-    console.log('  🔑 Zernio API Key:', ZERNIO_API_KEY ? '✅ Set' : '❌ Missing');
-    console.log('  📄 Facebook Page ID:', FACEBOOK_PAGE_ID ? '✅ Set' : '❌ Missing');
-    console.log('  ⏱️  Auto-post Interval:', AUTO_POST_INTERVAL, 'minutes');
-    console.log('  📦 Zernio Client:', zernio ? '✅ Initialized' : '❌ Not initialized');
-    console.log('');
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
   });
 }
